@@ -12,7 +12,6 @@ Usage:
 
 (eg: ./HoldOn_DNS www.google.com)
 
-
 Test Environment:
 
 Linux Ubuntu 4.4.0-31-generic, 64bit. GCC version 5.3.1
