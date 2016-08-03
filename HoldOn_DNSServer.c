@@ -5,23 +5,27 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
-#include<math.h>
+#include <math.h>
 #include <signal.h>
 #include <errno.h>
 #include <sys/time.h>
+#include <linux/if_ether.h>
+#include <linux/in.h>
+#include<arpa/inet.h>
 
 #define BUF_SIZE 1024
-#define SRV_PORT 53
+#define SRV_PORT 53//DNS server port
+#define PORT 1253//DNS proxy port
 #define TIMEOUT 5//Define timeout=5 seconds
 
 typedef unsigned short U16;
 
 const char srv_ip[] = "8.8.8.8";//Default DNS server ip
 int expected_TTL=-1,expected_RTT=-1;//expected TTL and RTT used to judge whether reply is reliable
-int len=-1,retry=1,time_left=0;//length of received buf
+int len=-1,len_Ans=-1,retry=1,time_left=0;//length of received buf
 int gotAnyReply=0,DNSSEC_OK=0;
 float ttlRatio=1.5;//parameter used to confirm TTL,2.0 may be the optimal choice in my PC
-float rttRatio=0.1;//parameter used to confirm RTT, 0.1 may be the optimal choice in my PC
+float rttRatio=0.5;//parameter used to confirm RTT, 0.1 may be the optimal choice in my PC
 char bufSend[BUF_SIZE],bufRecv[BUF_SIZE];//buffer used to send query and receive reply
 char queryURL[100];
 
@@ -120,8 +124,8 @@ int getExpectedTTL_RTT()//send a DNS query without sensitive keyword and get the
     printf("Sending Test Request to %s...\n",srv_ip);
     struct timeval starttime,endtime;//Used to calculate the RTT
     char testURL[]="www.baidu.com";
-    int servfd,clifd,i;
-    struct sockaddr_in servaddr, addr;
+    int servfd,clifd,sockfd,i;//clifd used to send query and sockfd used to receive reply
+    struct sockaddr_in servaddr;
     int socklen = sizeof(servaddr);
     char buf[BUF_SIZE];
     char *p;
@@ -129,9 +133,15 @@ int getExpectedTTL_RTT()//send a DNS query without sensitive keyword and get the
     //1.construct DNS query,query=DNS_HDR+testURL+DNS_QER
     DNS_HDR  *dnshdr = (DNS_HDR *)buf;
     DNS_QER  *dnsqer = (DNS_QER *)(buf + sizeof(DNS_HDR));
-    if ((clifd  =  socket(AF_INET,SOCK_DGRAM, 0 ))  <   0 )
+    if ((clifd  =  socket(PF_INET,SOCK_DGRAM, 0 ))  <   0 )
     {
-        printf( " create socket error!\n " );
+        printf( "Create socket error!\n " );
+        return -1;
+    }
+    if((sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0)//make sure you are the super user
+    //if ((clifd  =  socket(AF_INET,SOCK_DGRAM, 0 ))  <   0 )
+    {
+        printf("Create socket error!\n");
         return -1;
     }
     bzero(&servaddr, sizeof(servaddr));
@@ -170,7 +180,7 @@ int getExpectedTTL_RTT()//send a DNS query without sensitive keyword and get the
     gettimeofday(&starttime,0);
 
     //3.receive the reply from DNS server
-    len = recvfrom(clifd,buf, BUF_SIZE, 0, (struct sockaddr *)&servaddr, &i);
+    len = recvfrom(sockfd,buf, BUF_SIZE, 0, (struct sockaddr *)&servaddr, &i);//use raw socket to recieve reply
     gettimeofday(&endtime,0);
 
     //4.calculate the expected RTT
@@ -182,19 +192,21 @@ int getExpectedTTL_RTT()//send a DNS query without sensitive keyword and get the
     if (len >= 0)
     {
         expected_TTL=0;
-        p=buf+len-10;
-        int i=3;
-        while(i>=0)
-        {
-            int temp=(unsigned int)(*p);
-            if(temp<0)
-                temp+=256;
-            expected_TTL+=temp*pow(16,i*2);
-            i--;
-            p++;
-        }
+        p=buf+22;
+        expected_TTL=(int)(*(p)&0XFF);//ttl is located in the 23th byte
+//        int i=3;
+//        while(i>=0)
+//        {
+//            int temp=(int)(*p);
+//            if(temp<0)
+//                temp+=256;
+//            expected_TTL+=temp*pow(16,i*2);
+//            i--;
+//            p++;
+//        }
     }
     close(clifd);
+    close(sockfd);
 
     //6.show the output.
     printf("\n--------Info From Test Request--------\n");
@@ -219,7 +231,8 @@ static void dealSigAlarm(int sigo)//handle the alarm timeout interruption
 
 int validateTTL(int ttl)//validate TTL
 {
-    if(ttl>(expected_TTL*(float)(1.0-ttlRatio))&&ttl<(float)(expected_TTL*(1.0+ttlRatio)))
+    //if(ttl>(expected_TTL*(float)(1.0-ttlRatio))&&ttl<(float)(expected_TTL*(1.0+ttlRatio)))
+    if(ttl==expected_TTL)
         return 1;
     else
         return 0;
@@ -232,26 +245,35 @@ int validateRTT(int rtt)//validate RTT
         return 0;
 }
 
+
 int DNSForward()
 {
-
+    retry=1;
     printf("Sending Query %s  to %s...\n\n",queryURL,srv_ip);
-    int servfd,clifd,i;
-    struct sockaddr_in servaddr, addr;
+    int servfd,clifd,sockfd,i;
+    struct sockaddr_in servaddr;
     struct sigaction alarmact;
     int socklen = sizeof(servaddr);
     char *p;
     int ttl=0,rtt=0;//used to record current reply info
-    int len_Ans,rtt_Ans,ttl_Ans;//used to record last unreliable reply info
+    int rtt_Ans,ttl_Ans;//used to record last unreliable reply info
 
     //1.contruct DNS query in bufSend
     DNS_HDR  *dnshdr = (DNS_HDR *)bufSend;
     DNS_QER  *dnsqer = (DNS_QER *)(bufSend + sizeof(DNS_HDR));
-    if ((clifd  =  socket(AF_INET,SOCK_DGRAM, 0 ))  <   0 )
+    if((clifd = socket(AF_INET,SOCK_DGRAM, 0)) < 0)
+    //if ((clifd  =  socket(AF_INET,SOCK_DGRAM, 0 ))  <   0 )
     {
         printf( "Create socket error!\n " );
         return -1;
     }
+    if((sockfd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_IP))) < 0)
+    //if ((clifd  =  socket(AF_INET,SOCK_DGRAM, 0 ))  <   0 )
+    {
+        printf("Create socket error!\n");
+        return -1;
+    }
+
     bzero(&servaddr, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     inet_aton(srv_ip, &servaddr.sin_addr);
@@ -306,13 +328,14 @@ int DNSForward()
         gettimeofday(&starttime,0);
         len = sendto(clifd, bufSend, sizeof(DNS_HDR) + sizeof(DNS_QER) +
                     strlen(queryURL) + 2, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
+                    printf("sending...\n");
         alarm(retry*TIMEOUT);
         }
         else
             alarm(time_left);
 
         //3.2 receive from the DNS server and calculate RTT
-        len = recvfrom(clifd,bufRecv, BUF_SIZE, 0, (struct sockaddr *)&servaddr, &i);
+        len = recvfrom(sockfd,bufRecv, BUF_SIZE, 0, (struct sockaddr *)&servaddr, &i);
         gettimeofday(&endtime,0);
         double timeuse = 1000000*(endtime.tv_sec - starttime.tv_sec) +
                     endtime.tv_usec - starttime.tv_usec;
@@ -336,17 +359,20 @@ int DNSForward()
                 print IP and break;*/
 
             //3.2.2.2 Validate TTL and RTT
-            p=bufRecv+len-10;
-            int i=3;
-            while(i>=0)
-            {
-                int temp=(int)(*p);
-                if(temp<0)
-                    temp+=256;
-                ttl+=temp*pow(16,i*2);
-                i--;
-                p++;
-            }
+
+            p=bufRecv+22;
+            ttl=(int)(*(p)&0XFF);
+//            p=bufRecv+len-10;
+//            int i=3;
+//            while(i>=0)
+//            {
+//                int temp=(int)(*p);
+//                if(temp<0)
+//                    temp+=256;
+//                ttl+=temp*pow(16,i*2);
+//                i--;
+//                p++;
+//            }
             //record info of last reply
             len_Ans=len;
             ttl_Ans=ttl;
@@ -388,15 +414,66 @@ int DNSForward()
         else
             printf("No Suspecious Replies Received.\n\n");
     }
+    alarm(0);
+    time_left=0;
     close(clifd);
+    close(sockfd);
     return 0;
 }
+int receiveQuery()
+{
+    int sockfd;
+    struct sockaddr_in server;
+    struct sockaddr_in client;
+    socklen_t addrlen;
+    int num;
+    char buf[BUF_SIZE];
 
+    if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+    {
+        printf("Create socket error!\n");
+        return -1;
+    }
+
+    bzero(&server,sizeof(server));
+    server.sin_family=AF_INET;
+    server.sin_port=htons(PORT);
+    server.sin_addr.s_addr= htonl (INADDR_ANY);
+    if(bind(sockfd, (struct sockaddr *)&server, sizeof(server)) == -1)
+    {
+        perror("Bind()error.\n");
+        return -1;
+    }
+
+    addrlen=sizeof(client);
+
+    printf("Waiting for query...\n");
+    num =recvfrom(sockfd,buf,BUF_SIZE,0,(struct sockaddr*)&client,&addrlen);
+    if (num < 0)
+    {
+        perror("recvfrom() error\n");
+        return -1;
+    }
+    buf[num] = '\0';
+    printf("Proxy got a query for %s from client.\nIt's ip is %s, port is %d .\n",
+           buf,inet_ntoa(client.sin_addr),htons(client.sin_port));
+    strcpy(queryURL,buf);
+    DNSForward();
+    sendto(sockfd,bufRecv,len_Ans,0,(struct sockaddr *)&client,addrlen);
+    close(sockfd);
+    return 0;
+}
 int main(int argc, char** argv)
 {
-    strcpy(queryURL,argv[1]);
+    //strcpy(queryURL,argv[1]);
     Ping();
     getExpectedTTL_RTT();
-    DNSForward();
+    while(1)
+    if(receiveQuery()==-1)
+    {
+        printf("Hold-ON Server failed, please rebooting your computer and try again.\n");
+        break;
+    }
+
     return 0;
 }
