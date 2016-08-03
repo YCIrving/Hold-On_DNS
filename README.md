@@ -1,6 +1,12 @@
 # Hold-On_DNS
 Realization of Hold-On DNS, to protect DNS resolver from DNS poisoning.
 
+First modification after guidence. There are main two changes:
+1. Correct the mistake of TTL. In the eatlier edition, I mistook DNS TTL
+as IP TTL and now I correct it by using raw socket.
+2. This time, the Hold-On DNS can serve as a real DNS server , you can
+send a query to it and it will return a reply with Hold-On technology.
+
 Usage:
 1.Server:
 
