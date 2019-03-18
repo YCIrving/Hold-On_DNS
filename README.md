@@ -2,7 +2,7 @@
 Realization of Hold-On DNS, to protect DNS resolver from DNS poisoning.
 
 Check the [Original Paper](http://www.icsi.berkeley.edu/pubs/networking/dnspoisoning12.pdf) for details.
-![fig1](/Fig.1 Hold-On while waiting for a legitimate DNS reply.png)
+![fig1](https://github.com/YCIrving/Hold-On_DNS/blob/master/Fig.1%20Hold-On%20while%20waiting%20for%20a%20legitimate%20DNS%20reply.png)
 
 First modification after guidence. There are main two changes:
 1. Correct the mistake of TTL. In the eatlier edition, I mistook DNS TTL
