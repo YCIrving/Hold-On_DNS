@@ -1,5 +1,8 @@
 # Hold-On_DNS
 Realization of Hold-On DNS, to protect DNS resolver from DNS poisoning.
+Check the [Original Paper](http://www.icsi.berkeley.edu/pubs/networking/dnspoisoning12.pdf) for details.
+
+
 
 First modification after guidence. There are main two changes:
 1. Correct the mistake of TTL. In the eatlier edition, I mistook DNS TTL
